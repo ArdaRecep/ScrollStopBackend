@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\FirestoreCaptionHistoryService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class CaptionController extends Controller
 {
-    public function generate(Request $request)
+    public function generate(Request $request, FirestoreCaptionHistoryService $historyService)
     {
         $data = $request->validate([
             'productName' => 'required|string|max:200',
@@ -144,6 +146,42 @@ class CaptionController extends Controller
             return response()->json(['error' => 'No captions returned'], 400);
         }
 
+        $uid = trim((string) $request->attributes->get('firebase_uid', ''));
+        if ($uid !== '') {
+            try {
+                $historyService->saveGeneration($uid, $data, $captions);
+            } catch (\Throwable $e) {
+                Log::warning('Caption history write failed', [
+                    'uid' => $uid,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
         return response()->json(['captions' => $captions]);
+    }
+
+    public function recent(Request $request, FirestoreCaptionHistoryService $historyService)
+    {
+        $validated = $request->validate([
+            'limit' => 'nullable|integer|min:1|max:30',
+        ]);
+
+        $uid = trim((string) $request->attributes->get('firebase_uid', ''));
+        if ($uid === '') {
+            return response()->json(['error' => 'Invalid token'], 401);
+        }
+
+        try {
+            $items = $historyService->getRecent($uid, (int) ($validated['limit'] ?? 10));
+        } catch (\Throwable $e) {
+            Log::warning('Caption history read failed', [
+                'uid' => $uid,
+                'error' => $e->getMessage(),
+            ]);
+            return response()->json(['error' => 'Caption history unavailable'], 500);
+        }
+
+        return response()->json(['items' => $items]);
     }
 }

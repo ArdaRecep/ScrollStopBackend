@@ -5,4 +5,5 @@ use App\Http\Controllers\CaptionController;
 
 Route::middleware('auth.firebase')->group(function () {
     Route::post('/captions', [CaptionController::class, 'generate']);
+    Route::get('/captions/recent', [CaptionController::class, 'recent']);
 });
