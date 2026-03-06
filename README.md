@@ -1,59 +1,249 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# ScrollStop Backend (Laravel 12)
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+ScrollStop mobile app backend.
 
-## About Laravel
+## Features
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- Firebase ID token auth middleware (`Authorization: Bearer <token>`)
+- Caption generation API (existing)
+- Async video ad generation pipeline:
+  - OpenAI -> structured Remotion render spec
+  - Flux -> scene images
+  - Remotion renderer -> MP4
+  - Firebase Storage upload (`videos/{uid}/{jobId}.mp4`)
+  - Firestore job status tracking (`ai_jobs/{jobId}`)
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## API Endpoints
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+All `/api/*` routes require Firebase auth.
 
-## Learning Laravel
+- `POST /api/captions`
+- `GET /api/captions/recent?limit=10`
+- `POST /api/videos`
+- `GET /api/videos/recent?limit=20`
+- `GET /api/videos/{jobId}`
+- `GET /health` (public)
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+### Create Video Job
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+`POST /api/videos`
 
-## Laravel Sponsors
+Request body:
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+```json
+{
+  "productName": "GlowSkin Serum",
+  "productDescription": "Vitamin C + hyaluronic acid serum",
+  "brandName": "GlowSkin",
+  "platform": "TikTok",
+  "durationSeconds": 15,
+  "tone": "Bold",
+  "language": "English",
+  "voice": {
+    "enabled": true,
+    "gender": "female",
+    "style": "friendly"
+  },
+  "aspectRatio": "9:16",
+  "includePrice": true,
+  "priceText": "$19.99",
+  "cta": "Shop now"
+}
+```
 
-### Premium Partners
+Response:
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+```json
+{
+  "ok": true,
+  "jobId": "01JXXXX...",
+  "status": "pending"
+}
+```
 
-## Contributing
+### Poll Job Status
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+`GET /api/videos/{jobId}`
 
-## Code of Conduct
+Response:
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```json
+{
+  "ok": true,
+  "jobId": "01JXXXX...",
+  "status": "processing",
+  "videoUrl": null,
+  "error": null,
+  "output": {}
+}
+```
 
-## Security Vulnerabilities
+When completed:
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+```json
+{
+  "ok": true,
+  "jobId": "01JXXXX...",
+  "status": "success",
+  "videoUrl": "https://storage.googleapis.com/...",
+  "error": null,
+  "output": {
+    "sceneCount": 3,
+    "mode": "dynamic"
+  }
+}
+```
 
-## License
+## Required Environment Variables
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Minimum required for video pipeline:
+
+- `OPENAI_API_KEY`
+- `FLUXAI_API_KEY`
+- `FIREBASE_CREDENTIALS_B64`
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_STORAGE_BUCKET`
+  - Usually one of: `{project-id}.appspot.com` or `{project-id}.firebasestorage.app`
+  - If you get `The specified bucket does not exist`, create Firebase Storage for the project first or temporarily set `VIDEO_SKIP_STORAGE_UPLOAD=true` for local render tests.
+
+Also used:
+
+- `FIREBASE_FIRESTORE_DATABASE` (default: `(default)`)
+- `OPENAI_MODEL` (default: `gpt-4o-mini`)
+- `OPENAI_TTS_MODEL` (default: `tts-1-hd`)
+- `FLUXAI_API_ENDPOINT` (default: `https://api.fluxapi.ai/api/v1/flux/kontext/generate`)
+- `FLUXAI_POLL_ENDPOINT` (default: `https://api.fluxapi.ai/api/v1/flux/kontext/record-info`)
+- `FLUXAI_MODEL` (default: `flux-kontext-pro`)
+- `FLUXAI_ENABLE_TRANSLATION` (default: `true`)
+- `FLUXAI_PROMPT_UPSAMPLING` (default: `false`)
+- `FLUXAI_OUTPUT_FORMAT` (default: `jpeg`)
+- `FLUXAI_SAFETY_TOLERANCE` (default: `2`)
+- `FLUXAI_JOB_TIMEOUT_SECONDS` (default: `600`)
+- `FLUXAI_POLL_DELAY_MS` (default: `1000`)
+- `VIDEO_JOB_DISPATCH_MODE` (`process` | `queue` | `sync`, default: `process`)
+- `VIDEO_POST_RATE_LIMIT_PER_MINUTE` (default: `5`)
+- `VIDEO_REMOTION_TIMEOUT_SECONDS` (default: `900`)
+- `VIDEO_REMOTION_CRF` (default: `23`, higher = faster/less quality)
+- `VIDEO_REMOTION_X264_PRESET` (default: `veryfast`)
+- `VIDEO_REMOTION_CONCURRENCY` (default: `0`, auto)
+- `VIDEO_REMOTION_SCALE` (default: `1.0`)
+- `VIDEO_REMOTION_BUNDLE_CACHE_DIR` (default: `/tmp/scrollstop-remotion-bundles`)
+- `VIDEO_KEEP_WORKDIR_ON_ERROR` (default: `false`, keeps `/tmp/scrollstop-video-{jobId}` for debug)
+- `VIDEO_KEEP_WORKDIR_ON_SUCCESS` (default: `false`)
+- `VIDEO_STATIC_MODE` (default: `false`, skips OpenAI/Flux/TTS and uses static assets)
+- `VIDEO_SKIP_STORAGE_UPLOAD` (default: `false`, marks job success without Storage upload and returns `videoUrl: null`)
+- `VIDEO_DEFAULT_FPS` (default: `24`)
+- `VIDEO_MIN_SCENES` (default: `3`)
+- `VIDEO_MAX_SCENES` (default: `3`)
+- `VIDEO_STATIC_IMAGE_PATH` (default: `remotion-renderer/assets/static-input.png`)
+- `VIDEO_STATIC_AUDIO_PATH` (optional local mp3/wav path used only in static mode)
+- `FLUXAI_POLL_ATTEMPTS` (default: `40`)
+
+## Async Processing Modes
+
+`VIDEO_JOB_DISPATCH_MODE=process` (default):
+- `POST /api/videos` creates Firestore job and starts detached artisan worker process.
+- Safer for HTTP timeouts, but on Cloud Run you should run with CPU always allocated for reliable long-running background work.
+
+`VIDEO_JOB_DISPATCH_MODE=queue`:
+- Uses Laravel queue (`ProcessVideoAdJob`).
+- Recommended if you run a dedicated queue worker.
+
+`VIDEO_JOB_DISPATCH_MODE=sync`:
+- Runs pipeline inline (debug/local only).
+
+`VIDEO_STATIC_MODE=true`:
+- Disables OpenAI, Flux, and TTS calls for video jobs.
+- Uses `VIDEO_STATIC_IMAGE_PATH` for all scenes and renders deterministic output.
+
+`VIDEO_SKIP_STORAGE_UPLOAD=true`:
+- Skips Firebase Storage upload step (useful when bucket is not ready yet).
+- Job completes with `status=success`, `videoUrl=null`, and render/debug metadata under `output`.
+
+## Performance Logging
+
+Video pipeline logs stage durations into Laravel logs:
+
+- `openai_spec`
+- `flux_images`
+- `openai_tts`
+- `remotion_render`
+- `storage_upload`
+- `total`
+
+`outputPayload.debug.remotionStats` also includes:
+
+- `bundleMs`
+- `renderMs`
+- `totalMs`
+- `usedBundleCache`
+
+Look for log messages:
+
+- `Video job stage completed`
+- `Video job processing completed`
+- `Video job processing failed`
+
+## Firestore Job Schema
+
+Collection: `ai_jobs`
+
+Fields:
+
+- `userId`
+- `jobType` (`video`)
+- `status` (`pending|processing|success|error`)
+- `inputPayload`
+- `outputPayload`
+- `createdAt`
+- `updatedAt`
+- `completedAt`
+- `videoUrl`
+- `errorMessage`
+
+`GET /api/videos/{jobId}` enforces ownership (`job.userId === firebase_uid`).
+
+## Remotion Renderer
+
+Renderer lives in:
+
+- `remotion-renderer/render.mjs`
+- `remotion-renderer/src/*`
+
+Laravel invokes it via `node` and passes a temporary render spec JSON.
+
+## Local Run
+
+```bash
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan serve --host=0.0.0.0 --port=8087
+```
+
+## Quick Manual Test (curl)
+
+```bash
+# create job
+curl -X POST http://127.0.0.1:8087/api/videos \
+  -H "Authorization: Bearer <FIREBASE_ID_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "productName":"GlowSkin Serum",
+    "platform":"TikTok",
+    "durationSeconds":15,
+    "tone":"Bold",
+    "language":"English",
+    "voice":{"enabled":false}
+  }'
+
+# poll
+curl http://127.0.0.1:8087/api/videos/<jobId> \
+  -H "Authorization: Bearer <FIREBASE_ID_TOKEN>"
+```
+
+## Health
+
+```bash
+curl http://127.0.0.1:8087/health
+```
