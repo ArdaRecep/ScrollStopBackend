@@ -15,7 +15,9 @@ WORKDIR /app
 COPY . .
 
 RUN composer install --no-dev --optimize-autoloader --no-interaction \
-  && npm --prefix remotion-renderer install --omit=dev --no-audit --no-fund
+  && npm --prefix remotion-renderer install --omit=dev --no-audit --no-fund \
+  && php artisan optimize:clear || true
 
 EXPOSE 8080
-CMD php artisan serve --host=0.0.0.0 --port=8080
+
+CMD php artisan optimize:clear && php artisan serve --host=0.0.0.0 --port=8080
