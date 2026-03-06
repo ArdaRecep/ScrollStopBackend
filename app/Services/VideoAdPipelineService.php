@@ -111,35 +111,6 @@ class VideoAdPipelineService
                     $voiceDurationSeconds = $this->probeAudioDurationSeconds($voiceAudioPath);
                     if ($voiceDurationSeconds !== null) {
                         $debugOutput['voiceoverDurationSeconds'] = $voiceDurationSeconds;
-                        $this->alignSpecDurationWithVoiceover($spec, $voiceDurationSeconds);
-
-                        $targetSpeechCoverage = max(
-                            5.5,
-                            ((float) ($spec['durationSeconds'] ?? 0)) - 2.0
-                        );
-                        if ($voiceDurationSeconds < $targetSpeechCoverage) {
-                            $expandedScript = $this->expandVoiceScriptForCoverage($spec, $targetSpeechCoverage);
-                            $currentScript = (string) ($spec['voiceover']['script'] ?? '');
-
-                            if ($expandedScript !== null && trim($expandedScript) !== '' && $expandedScript !== $currentScript) {
-                                $spec['voiceover']['script'] = $expandedScript;
-                                $retryAudioPath = $measure(
-                                    'openai_tts_retry',
-                                    fn () => $this->voiceoverService->maybeGenerate($spec, $workDir)
-                                );
-
-                                if (is_string($retryAudioPath) && $retryAudioPath !== '') {
-                                    $spec['voiceoverAudioPath'] = $retryAudioPath;
-                                    $debugOutput['steps'][] = 'openai_tts_retry';
-
-                                    $retryDuration = $this->probeAudioDurationSeconds($retryAudioPath);
-                                    if ($retryDuration !== null) {
-                                        $debugOutput['voiceoverDurationSecondsRetry'] = $retryDuration;
-                                        $this->alignSpecDurationWithVoiceover($spec, $retryDuration);
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -388,114 +359,6 @@ class VideoAdPipelineService
         return round($duration, 3);
     }
 
-    private function alignSpecDurationWithVoiceover(array &$spec, float $voiceDurationSeconds): void
-    {
-        if ($voiceDurationSeconds <= 0) {
-            return;
-        }
-
-        $currentDuration = (int) ($spec['durationSeconds'] ?? 0);
-        if ($currentDuration <= 0) {
-            return;
-        }
-
-        $requiredDuration = (int) ceil($voiceDurationSeconds + 0.35);
-        if ($requiredDuration <= $currentDuration) {
-            return;
-        }
-
-        $maxAllowedDuration = max($currentDuration, 24);
-        $targetDuration = min($requiredDuration, $maxAllowedDuration);
-        if ($targetDuration <= $currentDuration) {
-            return;
-        }
-
-        $spec['durationSeconds'] = $targetDuration;
-        $scenes = is_array($spec['scenes'] ?? null) ? $spec['scenes'] : [];
-        if ($scenes === []) {
-            return;
-        }
-
-        $durations = $this->splitDuration($targetDuration, count($scenes));
-        foreach ($scenes as $index => $scene) {
-            if (!is_array($scene)) {
-                continue;
-            }
-            $scenes[$index]['durationSeconds'] = $durations[$index] ?? 1;
-        }
-        $spec['scenes'] = $scenes;
-    }
-
-    private function expandVoiceScriptForCoverage(array $spec, float $targetSpeechSeconds): ?string
-    {
-        $voiceover = is_array($spec['voiceover'] ?? null) ? $spec['voiceover'] : [];
-        $script = trim((string) ($voiceover['script'] ?? ''));
-        if ($script === '') {
-            return null;
-        }
-
-        $targetWords = max(22, min(120, (int) ceil($targetSpeechSeconds * 3.0)));
-        $wordCount = $this->countWords($script);
-        if ($wordCount >= $targetWords) {
-            return $script;
-        }
-
-        $language = strtolower(trim((string) ($spec['language'] ?? 'english')));
-        $isTurkish = str_starts_with($language, 'turk');
-        $scenes = is_array($spec['scenes'] ?? null) ? $spec['scenes'] : [];
-
-        $segments = [];
-        foreach ($scenes as $scene) {
-            if (!is_array($scene)) {
-                continue;
-            }
-            $overlay = trim((string) ($scene['overlayText'] ?? ''));
-            if ($overlay === '') {
-                continue;
-            }
-            $segments[] = $isTurkish
-                ? $overlay.' detayiyle urunu daha yakindan tanitiyoruz'
-                : "In this moment, {$overlay} shows the product value clearly";
-        }
-
-        if ($segments === []) {
-            $segments = $isTurkish
-                ? ['Urunun one cikan avantajlarini adim adim gosteriyoruz']
-                : ['The ad highlights practical product benefits scene by scene'];
-        }
-
-        $cursor = 0;
-        while ($wordCount < $targetWords && $segments !== []) {
-            $extra = $segments[$cursor % count($segments)];
-            $extra = trim(preg_replace('/\s+/u', ' ', $extra) ?? '');
-            if ($extra === '') {
-                $cursor += 1;
-                if ($cursor > count($segments) * 4) {
-                    break;
-                }
-                continue;
-            }
-
-            if (!preg_match('/[.!?]$/u', $extra)) {
-                $extra .= '.';
-            }
-
-            $script = rtrim($script).' '.$extra;
-            $wordCount = $this->countWords($script);
-            $cursor += 1;
-            if ($cursor > count($segments) * 6) {
-                break;
-            }
-        }
-
-        $script = trim(preg_replace('/\s+/u', ' ', $script) ?? '');
-        if ($script !== '' && !preg_match('/[.!?]$/u', $script)) {
-            $script .= '.';
-        }
-
-        return $script;
-    }
-
     private function resolveStaticFilePath(string $path): string
     {
         $trimmed = trim($path);
@@ -561,13 +424,6 @@ class VideoAdPipelineService
         }
 
         return mb_substr($normalized, 0, max(1, $limit - 3)).'...';
-    }
-
-    private function countWords(string $value): int
-    {
-        preg_match_all('/[\p{L}\p{N}\'’\-]+/u', $value, $matches);
-
-        return count($matches[0] ?? []);
     }
 
     private function cleanupDirectory(string $dir): void

@@ -20,17 +20,23 @@ class OpenAIAdSpecService
         $durationSeconds = max(10, min(20, $durationSeconds));
         $defaultFps = $this->resolveDefaultFps();
         $minScenes = max(2, (int) config('video.min_scenes', 3));
-        $maxScenes = max($minScenes, 5, (int) config('video.max_scenes', 5));
+        $maxScenes = max($minScenes, (int) config('video.max_scenes', 4));
+        $dynamicMinScenes = min($maxScenes, max(3, $minScenes));
         $referenceImages = is_array($input['referenceImages'] ?? null) ? $input['referenceImages'] : [];
         $hasReferenceImages = count($referenceImages) > 0;
+        $language = strtolower(trim((string) ($input['language'] ?? 'english')));
+        $isTurkishLanguage = str_starts_with($language, 'turk');
         $targetSceneCount = $this->deriveTargetSceneCount(
             $durationSeconds,
             $minScenes,
             $maxScenes,
             count($referenceImages)
         );
-        $voiceWordMin = max(20, min(75, (int) ceil(max(6, $durationSeconds - 2) * 3.0)));
-        $voiceWordMax = max($voiceWordMin + 6, min(92, (int) ceil($durationSeconds * 4.6)));
+        $targetSpeechSeconds = max(5, $durationSeconds - 2);
+        $wordsPerSecond = $isTurkishLanguage ? 2.05 : 2.35;
+        $voiceWordTarget = (int) round($targetSpeechSeconds * $wordsPerSecond);
+        $voiceWordMin = max(14, $voiceWordTarget - 4);
+        $voiceWordMax = max($voiceWordMin + 4, min(58, $voiceWordTarget + 6));
         $rules = [
             sprintf('Exactly %d scenes', $targetSceneCount),
             sprintf('Use %d fps unless there is a strong reason not to', $defaultFps),
@@ -40,9 +46,10 @@ class OpenAIAdSpecService
             'If includePrice=true then mention priceText in at least one overlay text',
             'Each overlayText max 7 words and max 42 characters',
             'Avoid hashtags and emojis in overlayText',
+            'Avoid internet slang words like lol, lmao, xd',
             sprintf('Voiceover script should be between %d and %d words', $voiceWordMin, $voiceWordMax),
             'Voiceover must flow across the whole ad and end about 2 seconds before video end',
-            'For 14+ second videos keep pacing dynamic with 4 or 5 scenes',
+            sprintf('For 14+ second videos keep pacing dynamic with %d to %d scenes', $dynamicMinScenes, $maxScenes),
             'Image prompts must look photorealistic, natural and physically plausible',
             'Avoid collage or cutout style visuals',
             'Product must be the visual hero of the scene — prominent but physically believable, scaled to its real-world context',
@@ -100,7 +107,7 @@ class OpenAIAdSpecService
             ->acceptJson()
             ->post('https://api.openai.com/v1/chat/completions', [
                 'model' => $model,
-                'temperature' => 0.35,
+                'temperature' => 0.2,
                 'response_format' => [
                     'type' => 'json_object',
                 ],
@@ -144,7 +151,7 @@ class OpenAIAdSpecService
         int $targetSceneCount
     ): array {
         $minScenes = max(2, (int) config('video.min_scenes', 3));
-        $maxScenes = max($minScenes, 5, (int) config('video.max_scenes', 5));
+        $maxScenes = max($minScenes, (int) config('video.max_scenes', 4));
         $targetSceneCount = max($minScenes, min($maxScenes, $targetSceneCount));
         $referenceImages = is_array($input['referenceImages'] ?? null) ? $input['referenceImages'] : [];
         $referenceCount = count($referenceImages);
@@ -288,10 +295,10 @@ class OpenAIAdSpecService
     ): int {
         $durationBased = (int) round($durationSeconds / 3.7);
         if ($durationSeconds >= 14) {
-            $durationBased = max($durationBased, 4);
+            $durationBased = max($durationBased, min($maxScenes, 4));
         }
         if ($durationSeconds >= 18) {
-            $durationBased = max($durationBased, 5);
+            $durationBased = max($durationBased, min($maxScenes, 4));
         }
         $durationBased = max($minScenes, min($maxScenes, $durationBased));
 
@@ -484,24 +491,12 @@ class OpenAIAdSpecService
             return '';
         }
 
-        $targetSpeechSeconds = max(6, $durationSeconds - 2);
-        $minWords = max(20, min(90, (int) ceil($targetSpeechSeconds * 3.0)));
-        $maxWords = max($minWords + 8, min(110, (int) ceil($durationSeconds * 4.8)));
+        $language = strtolower(trim((string) ($input['language'] ?? 'english')));
+        $isTurkish = str_starts_with($language, 'turk');
+        $targetSpeechSeconds = max(5, $durationSeconds - 2);
+        $wordsPerSecond = $isTurkish ? 2.05 : 2.35;
+        $maxWords = max(16, min(64, (int) ceil($targetSpeechSeconds * $wordsPerSecond) + 5));
         $wordCount = $this->countWords($normalized);
-
-        if ($wordCount < $minWords) {
-            $linePool = $this->buildVoiceLinePool($input, $scenes);
-            $cursor = 0;
-            while ($wordCount < $minWords && $linePool !== []) {
-                $line = $linePool[$cursor % count($linePool)];
-                $normalized = $this->appendVoiceSentence($normalized, $line);
-                $wordCount = $this->countWords($normalized);
-                $cursor += 1;
-                if ($cursor > count($linePool) * 4) {
-                    break;
-                }
-            }
-        }
 
         if ($wordCount > $maxWords) {
             $tokens = preg_split('/\s+/u', $normalized, -1, PREG_SPLIT_NO_EMPTY) ?: [];
@@ -513,94 +508,6 @@ class OpenAIAdSpecService
         }
 
         return $this->normalizeVoiceScript($normalized);
-    }
-
-    private function buildVoiceLinePool(array $input, array $scenes): array
-    {
-        $language = strtolower(trim((string) ($input['language'] ?? 'english')));
-        $isTurkish = str_starts_with($language, 'turk');
-
-        $productName = trim((string) ($input['productName'] ?? 'Urun'));
-        $productDescription = trim((string) ($input['productDescription'] ?? ''));
-        $cta = trim((string) ($input['cta'] ?? ''));
-        $priceText = trim((string) ($input['priceText'] ?? ''));
-        $includePrice = (bool) ($input['includePrice'] ?? false);
-
-        $lines = [];
-        if ($isTurkish) {
-            $lines[] = $productName.' her sahnede gercek kullanim hissi verir';
-            if ($productDescription !== '') {
-                $lines[] = $productDescription;
-            }
-            $lines[] = 'Her karede urunun one cikan faydasini net sekilde gorursunuz';
-            if ($includePrice && $priceText !== '') {
-                $lines[] = 'Fiyat avantaji: '.$priceText;
-            }
-            if ($cta !== '') {
-                $lines[] = 'Şimdi '.$cta;
-            } else {
-                $lines[] = 'Detaylar icin hemen simdi kesfet';
-            }
-        } else {
-            $lines[] = "{$productName} is designed for real everyday moments";
-            if ($productDescription !== '') {
-                $lines[] = $productDescription;
-            }
-            $lines[] = 'Each scene highlights a practical product benefit';
-            if ($includePrice && $priceText !== '') {
-                $lines[] = "Special offer: {$priceText}";
-            }
-            if ($cta !== '') {
-                $lines[] = $cta;
-            } else {
-                $lines[] = 'Tap now to explore more';
-            }
-        }
-
-        foreach ($scenes as $scene) {
-            if (!is_array($scene)) {
-                continue;
-            }
-            $overlay = trim((string) ($scene['overlayText'] ?? ''));
-            if ($overlay === '') {
-                continue;
-            }
-            $lines[] = $isTurkish
-                ? $overlay.' vurgusunu güçlendirir'
-                : "This scene reinforces {$overlay}";
-        }
-
-        $clean = [];
-        foreach ($lines as $line) {
-            $line = trim(preg_replace('/\s+/u', ' ', (string) $line) ?? '');
-            if ($line === '') {
-                continue;
-            }
-            if (!in_array($line, $clean, true)) {
-                $clean[] = $line;
-            }
-        }
-
-        return $clean;
-    }
-
-    private function appendVoiceSentence(string $script, string $line): string
-    {
-        $line = trim(preg_replace('/\s+/u', ' ', $line) ?? '');
-        if ($line === '') {
-            return $script;
-        }
-
-        $line = rtrim($line, " \t\n\r\0\x0B");
-        if (!preg_match('/[.!?]$/u', $line)) {
-            $line .= '.';
-        }
-
-        if ($script === '') {
-            return $line;
-        }
-
-        return rtrim($script).' '.$line;
     }
 
     private function countWords(string $value): int
@@ -618,6 +525,8 @@ class OpenAIAdSpecService
         }
 
         $normalized = str_replace(['#', '*', '_'], '', $normalized);
+        $normalized = preg_replace('/\b(?:lol|lmao|lmfao|xd|wtf|bro)\b/iu', '', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\s+/u', ' ', trim($normalized)) ?? $normalized;
 
         $words = preg_split('/\s+/u', $normalized, -1, PREG_SPLIT_NO_EMPTY) ?: [];
         if (count($words) > 7) {
@@ -636,6 +545,12 @@ class OpenAIAdSpecService
     private function normalizeVoiceScript(string $script): string
     {
         $normalized = preg_replace('/\s+/u', ' ', trim($script)) ?? '';
+        if ($normalized === '') {
+            return '';
+        }
+
+        $normalized = preg_replace('/\b(?:lol|lmao|lmfao|xd|wtf|bro)\b/iu', '', $normalized) ?? $normalized;
+        $normalized = preg_replace('/\s+/u', ' ', trim($normalized)) ?? $normalized;
         if ($normalized === '') {
             return '';
         }
