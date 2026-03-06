@@ -39,6 +39,7 @@ return [
         'api_key' => env('OPENAI_API_KEY'),
         'model' => env('OPENAI_MODEL', 'gpt-4.1-mini'),
         'tts_model' => env('OPENAI_TTS_MODEL', 'tts-1-hd'),
+        'tts_speed' => (float) env('OPENAI_TTS_SPEED', 0.95),
     ],
 
     'flux' => [

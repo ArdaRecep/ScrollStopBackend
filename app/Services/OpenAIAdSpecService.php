@@ -20,7 +20,38 @@ class OpenAIAdSpecService
         $durationSeconds = max(10, min(20, $durationSeconds));
         $defaultFps = $this->resolveDefaultFps();
         $minScenes = max(2, (int) config('video.min_scenes', 3));
-        $maxScenes = max($minScenes, (int) config('video.max_scenes', 4));
+        $maxScenes = max($minScenes, 5, (int) config('video.max_scenes', 5));
+        $referenceImages = is_array($input['referenceImages'] ?? null) ? $input['referenceImages'] : [];
+        $hasReferenceImages = count($referenceImages) > 0;
+        $targetSceneCount = $this->deriveTargetSceneCount(
+            $durationSeconds,
+            $minScenes,
+            $maxScenes,
+            count($referenceImages)
+        );
+        $voiceWordMin = max(20, min(75, (int) ceil(max(6, $durationSeconds - 2) * 3.0)));
+        $voiceWordMax = max($voiceWordMin + 6, min(92, (int) ceil($durationSeconds * 4.6)));
+        $rules = [
+            sprintf('Exactly %d scenes', $targetSceneCount),
+            sprintf('Use %d fps unless there is a strong reason not to', $defaultFps),
+            'Each scene should include a concrete visual image prompt',
+            'Mention product/brand naturally',
+            'Include CTA in final scene text',
+            'If includePrice=true then mention priceText in at least one overlay text',
+            'Each overlayText max 7 words and max 42 characters',
+            'Avoid hashtags and emojis in overlayText',
+            sprintf('Voiceover script should be between %d and %d words', $voiceWordMin, $voiceWordMax),
+            'Voiceover must flow across the whole ad and end about 2 seconds before video end',
+            'For 14+ second videos keep pacing dynamic with 4 or 5 scenes',
+            'Image prompts must look photorealistic, natural and physically plausible',
+            'Avoid collage or cutout style visuals',
+            'Product must be the visual hero of the scene — prominent but physically believable, scaled to its real-world context',
+        ];
+        if ($hasReferenceImages) {
+            $rules[] = 'Use reference images only for product identity; create new compositions with different angles/backgrounds';
+            $rules[] = 'Never replicate the exact original framing of a reference image';
+            $rules[] = 'When possible, reuse a reference image in multiple distinct scenes with different contexts';
+        }
 
         $messages = [
             [
@@ -31,6 +62,7 @@ class OpenAIAdSpecService
                     'No markdown, no extra commentary.',
                     'Respect requested duration and language.',
                     'Write concise, high-conversion overlay text.',
+                    'Overlay text must be short punchy phrases, not long sentences.',
                 ]),
             ],
             [
@@ -48,6 +80,7 @@ class OpenAIAdSpecService
                             'overlayText' => 'string',
                             'textAnimations' => ['string'],
                             'transition' => 'string',
+                            'referenceImageIndex' => 'number|null',
                         ]],
                         'voiceover' => [
                             'enabled' => 'boolean',
@@ -57,14 +90,7 @@ class OpenAIAdSpecService
                         ],
                     ],
                     'input' => $input,
-                    'rules' => [
-                        sprintf('At least %d scenes, at most %d scenes', $minScenes, $maxScenes),
-                        sprintf('Use %d fps unless there is a strong reason not to', $defaultFps),
-                        'Each scene should include a concrete visual image prompt',
-                        'Mention product/brand naturally',
-                        'Include CTA in final scene text',
-                        'If includePrice=true then mention priceText in at least one overlay text',
-                    ],
+                    'rules' => $rules,
                 ], JSON_UNESCAPED_UNICODE),
             ],
         ];
@@ -74,7 +100,7 @@ class OpenAIAdSpecService
             ->acceptJson()
             ->post('https://api.openai.com/v1/chat/completions', [
                 'model' => $model,
-                'temperature' => 0.4,
+                'temperature' => 0.35,
                 'response_format' => [
                     'type' => 'json_object',
                 ],
@@ -108,14 +134,22 @@ class OpenAIAdSpecService
             throw new RuntimeException('OpenAI response is not valid JSON');
         }
 
-        return $this->normalizeSpec($parsed, $input, $durationSeconds);
+        return $this->normalizeSpec($parsed, $input, $durationSeconds, $targetSceneCount);
     }
 
-    private function normalizeSpec(array $raw, array $input, int $durationSeconds): array
-    {
+    private function normalizeSpec(
+        array $raw,
+        array $input,
+        int $durationSeconds,
+        int $targetSceneCount
+    ): array {
         $minScenes = max(2, (int) config('video.min_scenes', 3));
-        $maxScenes = max($minScenes, (int) config('video.max_scenes', 4));
+        $maxScenes = max($minScenes, 5, (int) config('video.max_scenes', 5));
+        $targetSceneCount = max($minScenes, min($maxScenes, $targetSceneCount));
+        $referenceImages = is_array($input['referenceImages'] ?? null) ? $input['referenceImages'] : [];
+        $referenceCount = count($referenceImages);
         $defaultFps = $this->resolveDefaultFps();
+
         $fps = (int) ($raw['fps'] ?? $defaultFps);
         if ($fps < 24 || $fps > 60) {
             $fps = $defaultFps;
@@ -137,15 +171,20 @@ class OpenAIAdSpecService
 
             $sceneDuration = max(1, (int) ($scene['durationSeconds'] ?? 0));
             $imagePrompt = trim((string) ($scene['imagePrompt'] ?? ''));
-            $overlayText = trim((string) ($scene['overlayText'] ?? ''));
+            $overlayText = $this->sanitizeOverlayText((string) ($scene['overlayText'] ?? ''));
             $transition = trim((string) ($scene['transition'] ?? 'cut'));
+            $referenceImageIndex = (int) ($scene['referenceImageIndex'] ?? 0);
 
             if ($overlayText === '') {
                 continue;
             }
 
             if ($imagePrompt === '') {
-                $imagePrompt = $this->fallbackImagePrompt($input, $overlayText);
+                $imagePrompt = $this->fallbackImagePrompt(
+                    $input,
+                    $overlayText,
+                    $referenceImageIndex > 0 ? $referenceImageIndex : null
+                );
             }
 
             $textAnimations = is_array($scene['textAnimations'] ?? null)
@@ -155,28 +194,39 @@ class OpenAIAdSpecService
                 )))
                 : [];
 
-            $scenes[] = [
+            $normalizedScene = [
                 'durationSeconds' => $sceneDuration,
                 'imagePrompt' => $imagePrompt,
                 'overlayText' => $overlayText,
                 'textAnimations' => $textAnimations,
                 'transition' => $transition !== '' ? $transition : 'cut',
             ];
+
+            if ($referenceCount > 0 && $referenceImageIndex > 0 && $referenceImageIndex <= $referenceCount) {
+                $normalizedScene['referenceImageIndex'] = $referenceImageIndex;
+            }
+
+            $scenes[] = $normalizedScene;
         }
 
         if ($scenes === []) {
-            $scenes = $this->fallbackScenes($input);
+            $scenes = $this->fallbackScenes($input, $targetSceneCount);
         }
 
-        if (count($scenes) < $minScenes) {
-            $scenes = array_merge($scenes, $this->fallbackScenes($input));
-            $scenes = array_slice($scenes, 0, $minScenes);
+        while (count($scenes) < $targetSceneCount) {
+            foreach ($this->fallbackScenes($input, $targetSceneCount) as $fallbackScene) {
+                if (count($scenes) >= $targetSceneCount) {
+                    break;
+                }
+                $scenes[] = $fallbackScene;
+            }
         }
 
-        if (count($scenes) > $maxScenes) {
-            $scenes = array_slice($scenes, 0, $maxScenes);
+        if (count($scenes) > $targetSceneCount) {
+            $scenes = array_slice($scenes, 0, $targetSceneCount);
         }
 
+        $this->assignReferenceImageIndexes($scenes, $referenceCount);
         $this->normalizeSceneDurations($scenes, $durationSeconds);
 
         $voiceInput = is_array($input['voice'] ?? null) ? $input['voice'] : [];
@@ -196,10 +246,14 @@ class OpenAIAdSpecService
 
         $voiceScript = trim((string) ($voiceoverRaw['script'] ?? ''));
         if ($voiceEnabled && $voiceScript === '') {
-            $voiceScript = implode(' ', array_map(
-                static fn (array $scene) => $scene['overlayText'],
+            $voiceScript = implode('. ', array_map(
+                static fn (array $scene) => trim((string) ($scene['overlayText'] ?? '')),
                 $scenes
             ));
+        }
+        $voiceScript = $this->normalizeVoiceScript($voiceScript);
+        if ($voiceEnabled) {
+            $voiceScript = $this->ensureVoiceScriptCoverage($voiceScript, $input, $scenes, $durationSeconds);
         }
 
         return [
@@ -226,75 +280,173 @@ class OpenAIAdSpecService
         return max(24, min(60, $fps));
     }
 
-    private function normalizeSceneDurations(array &$scenes, int $targetDurationSeconds): void
-    {
-        $total = array_sum(array_map(
-            static fn (array $scene) => (int) $scene['durationSeconds'],
-            $scenes
-        ));
+    private function deriveTargetSceneCount(
+        int $durationSeconds,
+        int $minScenes,
+        int $maxScenes,
+        int $referenceImageCount
+    ): int {
+        $durationBased = (int) round($durationSeconds / 3.7);
+        if ($durationSeconds >= 14) {
+            $durationBased = max($durationBased, 4);
+        }
+        if ($durationSeconds >= 18) {
+            $durationBased = max($durationBased, 5);
+        }
+        $durationBased = max($minScenes, min($maxScenes, $durationBased));
 
-        if ($total <= 0) {
-            $equal = max(1, (int) floor($targetDurationSeconds / max(1, count($scenes))));
-            foreach ($scenes as &$scene) {
-                $scene['durationSeconds'] = $equal;
-            }
-            unset($scene);
-            $total = array_sum(array_column($scenes, 'durationSeconds'));
+        if ($referenceImageCount <= 0) {
+            return $durationBased;
         }
 
-        $scale = $targetDurationSeconds / max(1, $total);
-        $normalizedTotal = 0;
-
-        foreach ($scenes as $index => $scene) {
-            $scaled = max(1, (int) round($scene['durationSeconds'] * $scale));
-            $scenes[$index]['durationSeconds'] = $scaled;
-            $normalizedTotal += $scaled;
+        $referenceBased = max($minScenes, min($maxScenes, $referenceImageCount + 1));
+        if ($durationSeconds >= 14) {
+            $referenceBased = max($referenceBased, min($maxScenes, 4));
         }
 
-        $diff = $targetDurationSeconds - $normalizedTotal;
-        if ($diff !== 0 && $scenes !== []) {
-            $lastIndex = count($scenes) - 1;
-            $scenes[$lastIndex]['durationSeconds'] = max(1, $scenes[$lastIndex]['durationSeconds'] + $diff);
-        }
+        return max($durationBased, $referenceBased);
     }
 
-    private function fallbackScenes(array $input): array
+    private function normalizeSceneDurations(array &$scenes, int $targetDurationSeconds): void
+    {
+        if ($scenes === []) {
+            return;
+        }
+
+        $weights = array_map(static function (array $scene): float {
+            return max(1.0, (float) ($scene['durationSeconds'] ?? 1));
+        }, $scenes);
+
+        $weightSum = array_sum($weights);
+        if ($weightSum <= 0) {
+            $weightSum = count($scenes);
+        }
+
+        $raw = [];
+        $durations = [];
+        $used = 0;
+        foreach ($weights as $index => $weight) {
+            $rawValue = ($weight / $weightSum) * $targetDurationSeconds;
+            $raw[$index] = $rawValue;
+            $duration = max(1, (int) floor($rawValue));
+            $durations[$index] = $duration;
+            $used += $duration;
+        }
+
+        $remaining = $targetDurationSeconds - $used;
+
+        if ($remaining > 0) {
+            $fractions = [];
+            foreach ($raw as $index => $value) {
+                $fractions[$index] = $value - floor($value);
+            }
+            arsort($fractions);
+            $ordered = array_keys($fractions);
+            $cursor = 0;
+            while ($remaining > 0 && $ordered !== []) {
+                $targetIndex = $ordered[$cursor % count($ordered)];
+                $durations[$targetIndex] += 1;
+                $remaining -= 1;
+                $cursor += 1;
+            }
+        } elseif ($remaining < 0) {
+            $fractions = [];
+            foreach ($raw as $index => $value) {
+                $fractions[$index] = $value - floor($value);
+            }
+            asort($fractions);
+            $ordered = array_keys($fractions);
+            $cursor = 0;
+            while ($remaining < 0 && $ordered !== []) {
+                $targetIndex = $ordered[$cursor % count($ordered)];
+                if ($durations[$targetIndex] > 1) {
+                    $durations[$targetIndex] -= 1;
+                    $remaining += 1;
+                }
+                $cursor += 1;
+                if ($cursor > count($ordered) * 6) {
+                    break;
+                }
+            }
+        }
+
+        foreach ($scenes as $index => &$scene) {
+            $scene['durationSeconds'] = max(1, (int) ($durations[$index] ?? 1));
+        }
+        unset($scene);
+    }
+
+    private function fallbackScenes(array $input, int $count): array
     {
         $productName = trim((string) ($input['productName'] ?? 'Product'));
+        $productDescription = trim((string) ($input['productDescription'] ?? ''));
         $priceText = trim((string) ($input['priceText'] ?? ''));
         $cta = trim((string) ($input['cta'] ?? 'Shop now'));
+        $referenceImages = is_array($input['referenceImages'] ?? null) ? $input['referenceImages'] : [];
+        $referenceCount = count($referenceImages);
 
-        return [
+        $base = [
             [
-                'durationSeconds' => 4,
-                'imagePrompt' => $this->fallbackImagePrompt($input, "Hero shot of {$productName}"),
                 'overlayText' => "Meet {$productName}",
-                'textAnimations' => ['fade-in', 'slide-up'],
+                'imagePrompt' => $this->fallbackImagePrompt($input, "Hero visual of {$productName}", 1),
+                'textAnimations' => ['fade-in'],
                 'transition' => 'fade',
             ],
             [
-                'durationSeconds' => 4,
-                'imagePrompt' => $this->fallbackImagePrompt($input, "Lifestyle use case of {$productName}"),
-                'overlayText' => (string) ($input['productDescription'] ?? 'Built to solve your daily pain point'),
-                'textAnimations' => ['zoom-in'],
+                'overlayText' => $productDescription !== '' ? $productDescription : 'Daily comfort and style',
+                'imagePrompt' => $this->fallbackImagePrompt($input, "Lifestyle shot with {$productName}", 2),
+                'textAnimations' => ['slide-up'],
                 'transition' => 'cut',
             ],
             [
-                'durationSeconds' => 4,
-                'imagePrompt' => $this->fallbackImagePrompt($input, "Conversion-focused final frame for {$productName}"),
-                'overlayText' => $priceText !== '' ? "{$priceText} • {$cta}" : $cta,
+                'overlayText' => $priceText !== '' ? $priceText : 'Limited time offer',
+                'imagePrompt' => $this->fallbackImagePrompt($input, "Price highlight frame for {$productName}", 3),
+                'textAnimations' => ['pop'],
+                'transition' => 'cut',
+            ],
+            [
+                'overlayText' => 'Trusted by everyday users',
+                'imagePrompt' => $this->fallbackImagePrompt($input, "Social proof visual for {$productName}", 4),
+                'textAnimations' => ['fade-in'],
+                'transition' => 'fade',
+            ],
+            [
+                'overlayText' => $cta,
+                'imagePrompt' => $this->fallbackImagePrompt($input, "Strong CTA frame for {$productName}", 5),
                 'textAnimations' => ['pulse'],
                 'transition' => 'fade',
             ],
         ];
+
+        $fallback = [];
+        $target = max(1, $count);
+        for ($i = 0; $i < $target; $i++) {
+            $seed = $base[$i % count($base)];
+            $scene = [
+                'durationSeconds' => 3,
+                'imagePrompt' => (string) $seed['imagePrompt'],
+                'overlayText' => $this->sanitizeOverlayText((string) $seed['overlayText']),
+                'textAnimations' => is_array($seed['textAnimations']) ? $seed['textAnimations'] : ['fade-in'],
+                'transition' => (string) $seed['transition'],
+            ];
+
+            if ($referenceCount > 0) {
+                $scene['referenceImageIndex'] = ($i % $referenceCount) + 1;
+            }
+
+            $fallback[] = $scene;
+        }
+
+        return $fallback;
     }
 
-    private function fallbackImagePrompt(array $input, string $overlayText): string
+    private function fallbackImagePrompt(array $input, string $overlayText, ?int $referenceIndex = null): string
     {
         $productName = trim((string) ($input['productName'] ?? 'Product'));
         $brandName = trim((string) ($input['brandName'] ?? ''));
         $tone = trim((string) ($input['tone'] ?? 'Bold'));
         $platform = trim((string) ($input['platform'] ?? 'TikTok'));
+        $referenceImages = is_array($input['referenceImages'] ?? null) ? $input['referenceImages'] : [];
 
         $parts = [
             "Commercial ad visual for {$productName}",
@@ -302,9 +454,213 @@ class OpenAIAdSpecService
             "tone {$tone}",
             "platform {$platform}",
             $overlayText,
-            'cinematic lighting, high detail, no watermark, vertical framing',
+            'cinematic lighting, high detail, vertical framing, no watermark',
         ];
 
+        if ($referenceImages !== []) {
+            $parts[] = 'use reference only for product identity and key details';
+            $parts[] = 'create a new composition with different camera angle, setting and lighting';
+            $parts[] = 'natural product integration, realistic shadows and reflections, no pasted or cutout look';
+            $parts[] = 'never replicate the original reference framing or background';
+            $parts[] = 'maintain physically accurate product scale relative to people and environment';
+            if ($referenceIndex !== null && $referenceIndex > 0) {
+                $parts[] = 'use reference image #'.$referenceIndex;
+            }
+        } else {
+            $parts[] = 'photorealistic lifestyle ad scene, natural human interaction, realistic shadows';
+        }
+
         return implode(', ', array_values(array_filter($parts)));
+    }
+
+    private function ensureVoiceScriptCoverage(
+        string $script,
+        array $input,
+        array $scenes,
+        int $durationSeconds
+    ): string {
+        $normalized = $this->normalizeVoiceScript($script);
+        if ($normalized === '') {
+            return '';
+        }
+
+        $targetSpeechSeconds = max(6, $durationSeconds - 2);
+        $minWords = max(20, min(90, (int) ceil($targetSpeechSeconds * 3.0)));
+        $maxWords = max($minWords + 8, min(110, (int) ceil($durationSeconds * 4.8)));
+        $wordCount = $this->countWords($normalized);
+
+        if ($wordCount < $minWords) {
+            $linePool = $this->buildVoiceLinePool($input, $scenes);
+            $cursor = 0;
+            while ($wordCount < $minWords && $linePool !== []) {
+                $line = $linePool[$cursor % count($linePool)];
+                $normalized = $this->appendVoiceSentence($normalized, $line);
+                $wordCount = $this->countWords($normalized);
+                $cursor += 1;
+                if ($cursor > count($linePool) * 4) {
+                    break;
+                }
+            }
+        }
+
+        if ($wordCount > $maxWords) {
+            $tokens = preg_split('/\s+/u', $normalized, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+            $tokens = array_slice($tokens, 0, $maxWords);
+            $normalized = implode(' ', $tokens);
+            if (!preg_match('/[.!?]$/u', $normalized)) {
+                $normalized .= '.';
+            }
+        }
+
+        return $this->normalizeVoiceScript($normalized);
+    }
+
+    private function buildVoiceLinePool(array $input, array $scenes): array
+    {
+        $language = strtolower(trim((string) ($input['language'] ?? 'english')));
+        $isTurkish = str_starts_with($language, 'turk');
+
+        $productName = trim((string) ($input['productName'] ?? 'Urun'));
+        $productDescription = trim((string) ($input['productDescription'] ?? ''));
+        $cta = trim((string) ($input['cta'] ?? ''));
+        $priceText = trim((string) ($input['priceText'] ?? ''));
+        $includePrice = (bool) ($input['includePrice'] ?? false);
+
+        $lines = [];
+        if ($isTurkish) {
+            $lines[] = $productName.' her sahnede gercek kullanim hissi verir';
+            if ($productDescription !== '') {
+                $lines[] = $productDescription;
+            }
+            $lines[] = 'Her karede urunun one cikan faydasini net sekilde gorursunuz';
+            if ($includePrice && $priceText !== '') {
+                $lines[] = 'Fiyat avantaji: '.$priceText;
+            }
+            if ($cta !== '') {
+                $lines[] = 'Şimdi '.$cta;
+            } else {
+                $lines[] = 'Detaylar icin hemen simdi kesfet';
+            }
+        } else {
+            $lines[] = "{$productName} is designed for real everyday moments";
+            if ($productDescription !== '') {
+                $lines[] = $productDescription;
+            }
+            $lines[] = 'Each scene highlights a practical product benefit';
+            if ($includePrice && $priceText !== '') {
+                $lines[] = "Special offer: {$priceText}";
+            }
+            if ($cta !== '') {
+                $lines[] = $cta;
+            } else {
+                $lines[] = 'Tap now to explore more';
+            }
+        }
+
+        foreach ($scenes as $scene) {
+            if (!is_array($scene)) {
+                continue;
+            }
+            $overlay = trim((string) ($scene['overlayText'] ?? ''));
+            if ($overlay === '') {
+                continue;
+            }
+            $lines[] = $isTurkish
+                ? $overlay.' vurgusunu güçlendirir'
+                : "This scene reinforces {$overlay}";
+        }
+
+        $clean = [];
+        foreach ($lines as $line) {
+            $line = trim(preg_replace('/\s+/u', ' ', (string) $line) ?? '');
+            if ($line === '') {
+                continue;
+            }
+            if (!in_array($line, $clean, true)) {
+                $clean[] = $line;
+            }
+        }
+
+        return $clean;
+    }
+
+    private function appendVoiceSentence(string $script, string $line): string
+    {
+        $line = trim(preg_replace('/\s+/u', ' ', $line) ?? '');
+        if ($line === '') {
+            return $script;
+        }
+
+        $line = rtrim($line, " \t\n\r\0\x0B");
+        if (!preg_match('/[.!?]$/u', $line)) {
+            $line .= '.';
+        }
+
+        if ($script === '') {
+            return $line;
+        }
+
+        return rtrim($script).' '.$line;
+    }
+
+    private function countWords(string $value): int
+    {
+        preg_match_all('/[\p{L}\p{N}\'’\-]+/u', $value, $matches);
+
+        return count($matches[0] ?? []);
+    }
+
+    private function sanitizeOverlayText(string $text): string
+    {
+        $normalized = preg_replace('/\s+/u', ' ', trim($text)) ?? '';
+        if ($normalized === '') {
+            return '';
+        }
+
+        $normalized = str_replace(['#', '*', '_'], '', $normalized);
+
+        $words = preg_split('/\s+/u', $normalized, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        if (count($words) > 7) {
+            $words = array_slice($words, 0, 7);
+            $normalized = implode(' ', $words);
+        }
+
+        if (mb_strlen($normalized) > 42) {
+            $normalized = mb_substr($normalized, 0, 42);
+            $normalized = rtrim($normalized, " \t\n\r\0\x0B.,;:!?");
+        }
+
+        return trim($normalized);
+    }
+
+    private function normalizeVoiceScript(string $script): string
+    {
+        $normalized = preg_replace('/\s+/u', ' ', trim($script)) ?? '';
+        if ($normalized === '') {
+            return '';
+        }
+
+        if (!preg_match('/[.!?]$/u', $normalized)) {
+            $normalized .= '.';
+        }
+
+        return $normalized;
+    }
+
+    private function assignReferenceImageIndexes(array &$scenes, int $referenceCount): void
+    {
+        if ($referenceCount <= 0) {
+            return;
+        }
+
+        foreach ($scenes as $index => &$scene) {
+            $existing = (int) ($scene['referenceImageIndex'] ?? 0);
+            if ($existing >= 1 && $existing <= $referenceCount) {
+                continue;
+            }
+
+            $scene['referenceImageIndex'] = ($index % $referenceCount) + 1;
+        }
+        unset($scene);
     }
 }

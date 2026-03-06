@@ -12,7 +12,7 @@ class OpenAIVoiceoverService
     {
         $voiceover = is_array($renderSpec['voiceover'] ?? null) ? $renderSpec['voiceover'] : [];
         $enabled = (bool) ($voiceover['enabled'] ?? false);
-        $script = trim((string) ($voiceover['script'] ?? ''));
+        $script = $this->normalizeScript((string) ($voiceover['script'] ?? ''));
 
         if (! $enabled || $script === '') {
             return null;
@@ -25,10 +25,13 @@ class OpenAIVoiceoverService
 
         // Öneri: varsayılanı tts-1-hd yapabilirsin (daha doğal)
         $model = trim((string) config('services.openai.tts_model', 'tts-1-hd'));
+        $speed = (float) config('services.openai.tts_speed', 0.95);
+        $speed = max(0.85, min(1.1, $speed));
 
         $voice = $this->pickVoice(
             (string) ($voiceover['gender'] ?? 'female'),
-            (string) ($voiceover['style'] ?? 'friendly')
+            (string) ($voiceover['style'] ?? 'friendly'),
+            (string) ($renderSpec['language'] ?? 'English')
         );
 
         if (!is_dir($workDir) && !mkdir($workDir, 0775, true) && !is_dir($workDir)) {
@@ -42,6 +45,7 @@ class OpenAIVoiceoverService
                 'voice' => $voice,
                 'input' => $script,
                 'response_format' => 'mp3',
+                'speed' => $speed,
             ]);
 
         if (! $response->ok()) {
@@ -62,23 +66,50 @@ class OpenAIVoiceoverService
         return $targetPath;
     }
 
-    private function pickVoice(string $gender, string $style): string
-    {
-        $gender = strtolower(trim($gender));
-        $style = strtolower(trim($style));
+    private function pickVoice(string $gender, string $style, string $language): string
+{
+    $gender   = strtolower(trim($gender));
+    $style    = strtolower(trim($style));
+    $language = strtolower(trim($language));
+    $isTurkish = str_starts_with($language, 'turk');
 
-        if ($gender === 'male') {
-            return match ($style) {
-                'energetic' => 'fable',
-                'serious' => 'onyx',
-                default => 'echo',
-            };
-        }
-
-        return match ($style) {
-            'energetic' => 'shimmer',
-            'serious' => 'alloy',
-            default => 'nova',
+    if ($gender === 'male') {
+        return match (true) {
+            $style === 'energetic'              => 'ash',   // ash erkekte en dinamik
+            $style === 'serious'                => 'onyx',  // onyx en ağır/ciddi
+            $isTurkish                          => 'ash',   // Türkçe'de ash çok daha doğal
+            default                             => 'fable', // fable İngilizce'de sıcak
         };
     }
+
+    // Kadın
+    return match (true) {
+        $style === 'energetic' && $isTurkish  => 'coral',  // coral Türkçe'de en akıcı
+        $style === 'energetic'                 => 'coral',
+        $style === 'serious'   && $isTurkish  => 'nova',
+        $style === 'serious'                   => 'sage',
+        $isTurkish                             => 'nova',   // nova Türkçe'de en doğal kadın sesi
+        default                                => 'nova',
+    };
+}
+
+    private function normalizeScript(string $script): string
+{
+    $normalized = preg_replace('/\s+/u', ' ', trim($script)) ?: '';
+    if ($normalized === '') {
+        return '';
+    }
+
+    // Art arda noktalama işaretlerini temizle
+    $normalized = preg_replace('/([.!?])\s*[.!?]+/u', '$1', $normalized);
+
+    // Kısa cümle birleştirici — ses daha akıcı olur
+    $normalized = preg_replace('/\.\s+([a-zçğışöüа-я])/u', '. $1', $normalized);
+
+    if (!preg_match('/[.!?]$/u', $normalized)) {
+        $normalized .= '.';
+    }
+
+    return $normalized;
+}
 }

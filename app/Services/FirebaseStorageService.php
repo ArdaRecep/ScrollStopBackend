@@ -21,9 +21,50 @@ class FirebaseStorageService
             throw new RuntimeException('Video output file is missing');
         }
 
+        $storagePath = sprintf('videos/%s/%s.mp4', trim($uid), trim($jobId));
+
+        return $this->uploadFile($localPath, $storagePath, 'video/mp4');
+    }
+
+    /**
+     * @return array{path:string,url:string,urlExpiresAt:string,bucket:string}
+     */
+    public function uploadInputImage(
+        string $localPath,
+        string $uid,
+        string $jobId,
+        int $index,
+        ?string $contentType = null,
+        ?string $extension = null
+    ): array {
+        if (!is_file($localPath) || filesize($localPath) === 0) {
+            throw new RuntimeException('Input image file is missing');
+        }
+
+        $normalizedIndex = max(1, $index);
+        $safeExtension = $this->normalizeImageExtension($extension, $contentType);
+        $storagePath = sprintf(
+            'videos/%s/%s/inputs/ref-%d.%s',
+            trim($uid),
+            trim($jobId),
+            $normalizedIndex,
+            $safeExtension
+        );
+
+        return $this->uploadFile(
+            $localPath,
+            $storagePath,
+            $this->normalizeImageContentType($contentType, $safeExtension)
+        );
+    }
+
+    /**
+     * @return array{path:string,url:string,urlExpiresAt:string,bucket:string}
+     */
+    private function uploadFile(string $localPath, string $storagePath, string $contentType): array
+    {
         $projectId = $this->firebaseCredentials->projectId();
         $bucketName = $this->firebaseCredentials->storageBucket();
-        $storagePath = sprintf('videos/%s/%s.mp4', trim($uid), trim($jobId));
 
         $storage = new StorageClient([
             'projectId' => $projectId,
@@ -41,7 +82,7 @@ class FirebaseStorageService
                 $object = $bucket->upload(fopen($localPath, 'r'), [
                     'name' => $storagePath,
                     'metadata' => [
-                        'contentType' => 'video/mp4',
+                        'contentType' => $contentType,
                         'cacheControl' => 'private, max-age=0, no-transform',
                     ],
                 ]);
@@ -73,6 +114,41 @@ class FirebaseStorageService
             'urlExpiresAt' => $expiresAt->format(DATE_ATOM),
             'bucket' => $usedBucket,
         ];
+    }
+
+    private function normalizeImageExtension(?string $extension, ?string $contentType): string
+    {
+        $normalized = strtolower(trim((string) $extension));
+        $normalized = ltrim($normalized, '.');
+
+        $allowed = ['png', 'jpg', 'jpeg', 'webp'];
+        if (in_array($normalized, $allowed, true)) {
+            return $normalized === 'jpeg' ? 'jpg' : $normalized;
+        }
+
+        $mime = strtolower(trim((string) $contentType));
+        if (str_contains($mime, 'jpeg') || str_contains($mime, 'jpg')) {
+            return 'jpg';
+        }
+        if (str_contains($mime, 'webp')) {
+            return 'webp';
+        }
+
+        return 'png';
+    }
+
+    private function normalizeImageContentType(?string $contentType, string $extension): string
+    {
+        $normalized = strtolower(trim((string) $contentType));
+        if (str_starts_with($normalized, 'image/')) {
+            return $normalized;
+        }
+
+        return match ($extension) {
+            'jpg' => 'image/jpeg',
+            'webp' => 'image/webp',
+            default => 'image/png',
+        };
     }
 
     private function buildBucketCandidates(string $configuredBucket, string $projectId): array

@@ -9,7 +9,12 @@ use RuntimeException;
 
 class FluxImageService
 {
-    public function generateSceneImages(array $scenes, string $workDir, string $aspectRatio): array
+    public function generateSceneImages(
+        array $scenes,
+        string $workDir,
+        string $aspectRatio,
+        array $referenceImages = []
+    ): array
     {
         if (!is_dir($workDir) && !mkdir($workDir, 0775, true) && !is_dir($workDir)) {
             throw new RuntimeException('Unable to create temporary render directory');
@@ -29,11 +34,20 @@ class FluxImageService
             }
 
             $targetPath = rtrim($workDir, '/').'/scene-'.($index + 1).'.png';
+            $referenceMeta = $this->resolveSceneReferenceImage($scene, (int) $index, $referenceImages);
+            $prompt = $this->buildGenerationPrompt(
+                $prompt,
+                $referenceMeta['url'] ?? null,
+                $referenceMeta['note'] ?? null
+            );
             $preparedScenes[(string) $index] = [
                 'index' => (int) $index,
                 'prompt' => $prompt,
                 'targetPath' => $targetPath,
                 'scene' => $scene,
+                'referenceImageUrl' => $referenceMeta['url'],
+                'referenceImageIndex' => $referenceMeta['index'],
+                'referenceImageNote' => $referenceMeta['note'],
             ];
         }
 
@@ -54,11 +68,15 @@ class FluxImageService
             $this->generateImageToPath(
                 $prepared['prompt'],
                 $aspectRatio,
-                $prepared['targetPath']
+                $prepared['targetPath'],
+                $prepared['referenceImageUrl']
             );
 
             $scene = $prepared['scene'];
             $scene['imagePath'] = $prepared['targetPath'];
+            if (($prepared['referenceImageIndex'] ?? null) !== null && !isset($scene['referenceImageIndex'])) {
+                $scene['referenceImageIndex'] = $prepared['referenceImageIndex'];
+            }
             $outputScenes[] = $scene;
         }
 
@@ -95,7 +113,8 @@ class FluxImageService
                 $payload = $this->buildFluxApiAiPayload(
                     $scene['prompt'],
                     $aspectRatio,
-                    $model
+                    $model,
+                    $scene['referenceImageUrl'] ?? null
                 );
 
                 $requests[$key] = $pool
@@ -319,13 +338,21 @@ class FluxImageService
 
             $sceneData = $scene['scene'];
             $sceneData['imagePath'] = $scene['targetPath'];
+            if (($scene['referenceImageIndex'] ?? null) !== null && !isset($sceneData['referenceImageIndex'])) {
+                $sceneData['referenceImageIndex'] = $scene['referenceImageIndex'];
+            }
             $outputScenes[] = $sceneData;
         }
 
         return $outputScenes;
     }
 
-    private function generateImageToPath(string $prompt, string $aspectRatio, string $targetPath): void
+    private function generateImageToPath(
+        string $prompt,
+        string $aspectRatio,
+        string $targetPath,
+        ?string $referenceImageUrl = null
+    ): void
     {
         $apiKey = trim((string) config('services.flux.api_key'));
         if ($apiKey === '') {
@@ -343,7 +370,7 @@ class FluxImageService
         $isFluxApiAi = $this->isFluxApiAiEndpoint($endpoint);
 
         $payload = $isFluxApiAi
-            ? $this->buildFluxApiAiPayload($prompt, $aspectRatio, $model)
+            ? $this->buildFluxApiAiPayload($prompt, $aspectRatio, $model, $referenceImageUrl)
             : $this->buildBflPayload($prompt, $aspectRatio, $model, $width, $height);
 
         $response = $this->requestWithAuthFallback(
@@ -643,9 +670,14 @@ class FluxImageService
         return str_contains(strtolower($endpoint), 'api.fluxapi.ai');
     }
 
-    private function buildFluxApiAiPayload(string $prompt, string $aspectRatio, string $model): array
+    private function buildFluxApiAiPayload(
+        string $prompt,
+        string $aspectRatio,
+        string $model,
+        ?string $referenceImageUrl = null
+    ): array
     {
-        return [
+        $payload = [
             'prompt' => $prompt,
             'enableTranslation' => (bool) config('services.flux.enable_translation', true),
             'aspectRatio' => $aspectRatio,
@@ -654,6 +686,13 @@ class FluxImageService
             'model' => $model,
             'safetyTolerance' => (int) config('services.flux.safety_tolerance', 2),
         ];
+
+        $inputImage = trim((string) $referenceImageUrl);
+        if ($inputImage !== '') {
+            $payload['inputImage'] = $inputImage;
+        }
+
+        return $payload;
     }
 
     private function buildBflPayload(
@@ -777,6 +816,75 @@ class FluxImageService
 
         return null;
     }
+
+    /**
+     * @return array{url:?string,index:?int,note:?string}
+     */
+    private function resolveSceneReferenceImage(array $scene, int $sceneIndex, array $referenceImages): array
+    {
+        if ($referenceImages === []) {
+            return ['url' => null, 'index' => null, 'note' => null];
+        }
+
+        $cleaned = array_values(array_filter(
+            $referenceImages,
+            static fn ($item): bool => is_array($item) && trim((string) ($item['url'] ?? '')) !== ''
+        ));
+
+        if ($cleaned === []) {
+            return ['url' => null, 'index' => null, 'note' => null];
+        }
+
+        $desiredIndex = (int) ($scene['referenceImageIndex'] ?? 0);
+        if ($desiredIndex >= 1 && $desiredIndex <= count($cleaned)) {
+            $picked = $cleaned[$desiredIndex - 1];
+            return [
+                'url' => trim((string) ($picked['url'] ?? '')) ?: null,
+                'index' => $desiredIndex,
+                'note' => trim((string) ($picked['note'] ?? '')) ?: null,
+            ];
+        }
+
+        $resolvedIndex = ($sceneIndex % count($cleaned)) + 1;
+        $picked = $cleaned[$resolvedIndex - 1];
+
+        return [
+            'url' => trim((string) ($picked['url'] ?? '')) ?: null,
+            'index' => $resolvedIndex,
+            'note' => trim((string) ($picked['note'] ?? '')) ?: null,
+        ];
+    }
+
+    private function buildGenerationPrompt(
+    string $basePrompt,
+    ?string $referenceImageUrl = null,
+    ?string $referenceNote = null
+): string {
+    $prompt = trim(preg_replace('/\s+/u', ' ', $basePrompt) ?? '');
+    $parts = [
+        $prompt !== '' ? $prompt : null,
+        'Photorealistic ad image, natural cinematic lighting, physically plausible shadows and reflections',
+        'No watermark, no text in image',
+    ];
+
+    $hasReference = is_string($referenceImageUrl) && trim($referenceImageUrl) !== '';
+    if ($hasReference) {
+        $parts[] = 'Use reference image only for product identity, logo and color — ignore the original photo size and scale';
+        $parts[] = 'Place the product at a physically realistic size for the scene context';
+        $parts[] = 'Choose category-appropriate placement (in hand only when natural, otherwise in realistic usage environment)';
+        $parts[] = 'New composition: different background, angle and lighting from the reference';
+        $parts[] = 'Product must look naturally part of the scene, not pasted in';
+
+        $note = trim((string) $referenceNote);
+        if ($note !== '') {
+            $parts[] = 'Product context: '.mb_substr($note, 0, 140);
+        }
+    } else {
+        $parts[] = 'Natural lifestyle composition with authentic environment and realistic depth';
+    }
+
+    return implode('. ', array_values(array_filter($parts)));
+}
 
     private function writeFile(string $path, string $content): void
     {

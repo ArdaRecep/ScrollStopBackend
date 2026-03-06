@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\FirebaseStorageService;
 use App\Services\FirestoreJobService;
 use App\Services\VideoJobDispatcher;
 use Illuminate\Http\JsonResponse;
@@ -11,8 +12,12 @@ use Illuminate\Support\Str;
 
 class VideoController extends Controller
 {
-    public function create(Request $request, FirestoreJobService $jobService, VideoJobDispatcher $dispatcher): JsonResponse
-    {
+    public function create(
+        Request $request,
+        FirestoreJobService $jobService,
+        VideoJobDispatcher $dispatcher,
+        FirebaseStorageService $storageService
+    ): JsonResponse {
         $uid = trim((string) $request->attributes->get('firebase_uid', ''));
         if ($uid === '') {
             return response()->json(['ok' => false, 'error' => 'Invalid token'], 401);
@@ -46,13 +51,31 @@ class VideoController extends Controller
             'includePrice' => 'nullable|boolean',
             'priceText' => 'nullable|string|max:120|required_if:includePrice,true',
             'cta' => 'nullable|string|max:160',
+            'referenceImageUrls' => 'nullable|array|max:5',
+            'referenceImageUrls.*' => 'nullable|url|max:2000',
+            'referenceImageNotes' => 'nullable|array|max:5',
+            'referenceImageNotes.*' => 'nullable|string|max:120',
+            'productImages' => 'nullable|array|max:5',
+            'productImages.*' => 'nullable|file|image|mimes:jpg,jpeg,png,webp|max:8192',
         ]);
 
-        $inputPayload = $this->normalizeInputPayload($validated);
         $jobId = (string) Str::ulid();
+        $inputPayload = $this->normalizeInputPayload($validated);
         $jobCreated = false;
 
         try {
+            $referenceImages = $this->collectReferenceImages(
+                $request,
+                $validated,
+                $storageService,
+                $uid,
+                $jobId
+            );
+
+            if ($referenceImages !== []) {
+                $inputPayload['referenceImages'] = $referenceImages;
+            }
+
             $jobService->createVideoJob($jobId, $uid, $inputPayload);
             $jobCreated = true;
             $dispatcher->dispatch($jobId);
@@ -170,5 +193,76 @@ class VideoController extends Controller
             'priceText' => trim((string) ($validated['priceText'] ?? '')),
             'cta' => trim((string) ($validated['cta'] ?? '')),
         ];
+    }
+
+    private function collectReferenceImages(
+        Request $request,
+        array $validated,
+        FirebaseStorageService $storageService,
+        string $uid,
+        string $jobId
+    ): array {
+        $referenceImages = [];
+        $notes = is_array($validated['referenceImageNotes'] ?? null)
+            ? $validated['referenceImageNotes']
+            : [];
+
+        $urlImages = is_array($validated['referenceImageUrls'] ?? null)
+            ? $validated['referenceImageUrls']
+            : [];
+
+        foreach ($urlImages as $index => $url) {
+            $normalizedUrl = trim((string) $url);
+            if ($normalizedUrl === '') {
+                continue;
+            }
+
+            $referenceImages[] = [
+                'index' => count($referenceImages) + 1,
+                'url' => $normalizedUrl,
+                'source' => 'url',
+                'note' => trim((string) ($notes[$index] ?? '')),
+                'mimeType' => '',
+                'storagePath' => null,
+            ];
+        }
+
+        $uploadedImages = $request->file('productImages');
+        if (!is_array($uploadedImages)) {
+            return array_slice($referenceImages, 0, 5);
+        }
+
+        foreach ($uploadedImages as $index => $file) {
+            if (!$file || !$file->isValid()) {
+                continue;
+            }
+
+            $upload = $storageService->uploadInputImage(
+                $file->getRealPath(),
+                $uid,
+                $jobId,
+                count($referenceImages) + 1,
+                $file->getMimeType() ?: null,
+                $file->getClientOriginalExtension()
+            );
+
+            $referenceImages[] = [
+                'index' => count($referenceImages) + 1,
+                'url' => (string) ($upload['url'] ?? ''),
+                'source' => 'upload',
+                'note' => trim((string) ($notes[$index] ?? '')),
+                'mimeType' => (string) ($file->getMimeType() ?? ''),
+                'storagePath' => (string) ($upload['path'] ?? ''),
+            ];
+
+            if (count($referenceImages) >= 5) {
+                break;
+            }
+        }
+
+        return array_values(array_filter(
+            $referenceImages,
+            static fn (array $item): bool => trim((string) ($item['url'] ?? '')) !== ''
+        ));
     }
 }

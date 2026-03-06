@@ -47,9 +47,25 @@ Request body:
   "aspectRatio": "9:16",
   "includePrice": true,
   "priceText": "$19.99",
-  "cta": "Shop now"
+  "cta": "Shop now",
+  "referenceImageUrls": [
+    "https://example.com/product-packaged.jpg",
+    "https://example.com/product-in-use.jpg"
+  ],
+  "referenceImageNotes": [
+    "packaged",
+    "in-use"
+  ]
 }
 ```
+
+You can also send up to 5 product photos as multipart files:
+
+- field name: `productImages[]`
+- accepted: `jpg`, `jpeg`, `png`, `webp`
+- max size per image: `8MB`
+
+When reference images are provided, Flux Kontext generation uses `inputImage` for scene-level image editing.
 
 Response:
 
@@ -109,8 +125,9 @@ Minimum required for video pipeline:
 Also used:
 
 - `FIREBASE_FIRESTORE_DATABASE` (default: `(default)`)
-- `OPENAI_MODEL` (default: `gpt-4o-mini`)
+- `OPENAI_MODEL` (default: `gpt-4.1-mini`)
 - `OPENAI_TTS_MODEL` (default: `tts-1-hd`)
+- `OPENAI_TTS_SPEED` (default: `0.97`)
 - `FLUXAI_API_ENDPOINT` (default: `https://api.fluxapi.ai/api/v1/flux/kontext/generate`)
 - `FLUXAI_POLL_ENDPOINT` (default: `https://api.fluxapi.ai/api/v1/flux/kontext/record-info`)
 - `FLUXAI_MODEL` (default: `flux-kontext-pro`)
@@ -123,10 +140,10 @@ Also used:
 - `VIDEO_JOB_DISPATCH_MODE` (`process` | `queue` | `sync`, default: `process`)
 - `VIDEO_POST_RATE_LIMIT_PER_MINUTE` (default: `5`)
 - `VIDEO_REMOTION_TIMEOUT_SECONDS` (default: `900`)
-- `VIDEO_REMOTION_CRF` (default: `23`, higher = faster/less quality)
+- `VIDEO_REMOTION_CRF` (default: `25`, higher = faster/less quality)
 - `VIDEO_REMOTION_X264_PRESET` (default: `veryfast`)
 - `VIDEO_REMOTION_CONCURRENCY` (default: `0`, auto)
-- `VIDEO_REMOTION_SCALE` (default: `1.0`)
+- `VIDEO_REMOTION_SCALE` (default: `0.95`)
 - `VIDEO_REMOTION_BUNDLE_CACHE_DIR` (default: `/tmp/scrollstop-remotion-bundles`)
 - `VIDEO_KEEP_WORKDIR_ON_ERROR` (default: `false`, keeps `/tmp/scrollstop-video-{jobId}` for debug)
 - `VIDEO_KEEP_WORKDIR_ON_SUCCESS` (default: `false`)
@@ -134,7 +151,7 @@ Also used:
 - `VIDEO_SKIP_STORAGE_UPLOAD` (default: `false`, marks job success without Storage upload and returns `videoUrl: null`)
 - `VIDEO_DEFAULT_FPS` (default: `24`)
 - `VIDEO_MIN_SCENES` (default: `3`)
-- `VIDEO_MAX_SCENES` (default: `3`)
+- `VIDEO_MAX_SCENES` (default: `5`)
 - `VIDEO_STATIC_IMAGE_PATH` (default: `remotion-renderer/assets/static-input.png`)
 - `VIDEO_STATIC_AUDIO_PATH` (optional local mp3/wav path used only in static mode)
 - `FLUXAI_POLL_ATTEMPTS` (default: `40`)
@@ -167,6 +184,7 @@ Video pipeline logs stage durations into Laravel logs:
 - `openai_spec`
 - `flux_images`
 - `openai_tts`
+- `openai_tts_retry` (only when initial voice track is too short)
 - `remotion_render`
 - `storage_upload`
 - `total`
