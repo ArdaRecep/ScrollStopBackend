@@ -333,9 +333,27 @@ class FluxImageService
             }
 
             $download = $downloadResponses[$key] ?? null;
-            if (!$download instanceof Response || !$download->ok()) {
+            $hasValidInitialDownload = $download instanceof Response
+                && $download->ok()
+                && trim((string) $download->body()) !== '';
+
+            if (!$hasValidInitialDownload) {
+                $download = $this->downloadImageWithRetries(
+                    $imageUrl,
+                    $apiKey,
+                    $timeout,
+                    (int) config('services.flux.download_attempts', 12),
+                    (int) config('services.flux.download_delay_ms', 1500)
+                );
+            }
+
+            if (!$download instanceof Response || !$download->ok() || trim((string) $download->body()) === '') {
                 throw new RuntimeException(
-                    sprintf('Unable to download Flux image output for scene %d', $scene['index'] + 1)
+                    $this->buildImageDownloadErrorMessage(
+                        sprintf('Unable to download Flux image output for scene %d', $scene['index'] + 1),
+                        $download,
+                        $imageUrl
+                    )
                 );
             }
 
@@ -445,12 +463,115 @@ class FluxImageService
             throw new RuntimeException('Flux did not return an image');
         }
 
-        $download = Http::timeout($timeout)->get($imageUrl);
-        if (!$download->ok()) {
-            throw new RuntimeException('Unable to download Flux image output');
+        $download = $this->downloadImageWithRetries(
+            $imageUrl,
+            $apiKey,
+            $timeout,
+            (int) config('services.flux.download_attempts', 12),
+            (int) config('services.flux.download_delay_ms', 1500)
+        );
+
+        if (!$download instanceof Response || !$download->ok() || trim((string) $download->body()) === '') {
+            throw new RuntimeException(
+                $this->buildImageDownloadErrorMessage(
+                    'Unable to download Flux image output',
+                    $download,
+                    $imageUrl
+                )
+            );
         }
 
         $this->writeFile($targetPath, $download->body());
+    }
+
+    private function downloadImageWithRetries(
+        string $imageUrl,
+        string $apiKey,
+        int $timeoutSeconds,
+        int $attempts,
+        int $delayMs
+    ): ?Response {
+        $attemptCount = max(1, $attempts);
+        $timeout = max(15, $timeoutSeconds);
+        $baseDelayMs = max(250, $delayMs);
+        $lastResponse = null;
+
+        for ($attempt = 0; $attempt < $attemptCount; $attempt++) {
+            $response = Http::timeout($timeout)
+                ->withHeaders([
+                    'Accept' => 'image/*,application/octet-stream',
+                ])
+                ->get($imageUrl);
+
+            $lastResponse = $response;
+            if ($response->ok() && trim((string) $response->body()) !== '') {
+                return $response;
+            }
+
+            if (in_array($response->status(), [401, 403], true)) {
+                $authenticatedResponse = $this->requestWithAuthFallback(
+                    fn (array $headers): Response => Http::timeout($timeout)
+                        ->withHeaders(array_merge($headers, [
+                            'Accept' => 'image/*,application/octet-stream',
+                        ]))
+                        ->get($imageUrl),
+                    $apiKey,
+                    true
+                );
+
+                $lastResponse = $authenticatedResponse;
+                if ($authenticatedResponse->ok() && trim((string) $authenticatedResponse->body()) !== '') {
+                    return $authenticatedResponse;
+                }
+            }
+
+            if ($attempt < $attemptCount - 1) {
+                $waitMs = min(5000, (int) round($baseDelayMs * (1 + min($attempt, 4) * 0.35)));
+                usleep($waitMs * 1000);
+            }
+        }
+
+        return $lastResponse;
+    }
+
+    private function buildImageDownloadErrorMessage(
+        string $prefix,
+        ?Response $response,
+        string $imageUrl
+    ): string {
+        $safeUrl = $this->sanitizeUrlForError($imageUrl);
+        if (!$response instanceof Response) {
+            return $prefix.' (no response, url: '.$safeUrl.')';
+        }
+
+        $status = $response->status();
+        $body = trim((string) $response->body());
+        if ($body === '') {
+            return sprintf('%s (status %d, url: %s)', $prefix, $status, $safeUrl);
+        }
+
+        $snippet = mb_substr(preg_replace('/\s+/', ' ', $body) ?: $body, 0, 220);
+
+        return sprintf('%s (status %d, url: %s): %s', $prefix, $status, $safeUrl, $snippet);
+    }
+
+    private function sanitizeUrlForError(string $url): string
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return mb_substr($url, 0, 220);
+        }
+
+        $scheme = (string) ($parts['scheme'] ?? 'https');
+        $host = (string) ($parts['host'] ?? '');
+        $path = (string) ($parts['path'] ?? '');
+        $safe = trim($scheme.'://'.$host.$path);
+
+        if ($safe === '://') {
+            return mb_substr($url, 0, 220);
+        }
+
+        return mb_substr($safe, 0, 220);
     }
 
     private function pollImageUrl(

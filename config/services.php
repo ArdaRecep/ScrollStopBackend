@@ -58,6 +58,8 @@ return [
         'job_timeout_seconds' => (int) env('FLUXAI_JOB_TIMEOUT_SECONDS', 1800),
         'poll_attempts' => (int) env('FLUXAI_POLL_ATTEMPTS', 1800),
         'poll_delay_ms' => (int) env('FLUXAI_POLL_DELAY_MS', 1000),
+        'download_attempts' => (int) env('FLUXAI_DOWNLOAD_ATTEMPTS', 12),
+        'download_delay_ms' => (int) env('FLUXAI_DOWNLOAD_DELAY_MS', 1500),
     ],
 
     'firebase' => [

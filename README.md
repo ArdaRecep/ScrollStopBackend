@@ -142,6 +142,8 @@ Also used:
 - `FLUXAI_JOB_TIMEOUT_SECONDS` (default: `1800`)
 - `FLUXAI_POLL_ATTEMPTS` (default: `1800`)
 - `FLUXAI_POLL_DELAY_MS` (default: `1000`)
+- `FLUXAI_DOWNLOAD_ATTEMPTS` (default: `12`)
+- `FLUXAI_DOWNLOAD_DELAY_MS` (default: `1500`)
 - `FIRESTORE_TIMEOUT_SECONDS` (default: `120`)
 - `VIDEO_JOB_DISPATCH_MODE` (`process` | `queue` | `sync`, default: `process`)
 - `VIDEO_POST_RATE_LIMIT_PER_MINUTE` (default: `5`)
