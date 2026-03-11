@@ -83,7 +83,9 @@ class FirestoreCaptionHistoryService
             ],
         ];
 
-        $response = Http::timeout(15)
+        $firestoreTimeout = max(30, (int) config('services.firebase.firestore_timeout_seconds', 120));
+
+        $response = Http::timeout($firestoreTimeout)
             ->withToken($this->getAccessToken())
             ->acceptJson()
             ->post($this->collectionUrl($uid), $payload);
@@ -95,7 +97,9 @@ class FirestoreCaptionHistoryService
 
     public function getRecent(string $uid, int $limit = 10): array
     {
-        $response = Http::timeout(15)
+        $firestoreTimeout = max(30, (int) config('services.firebase.firestore_timeout_seconds', 120));
+
+        $response = Http::timeout($firestoreTimeout)
             ->withToken($this->getAccessToken())
             ->acceptJson()
             ->get($this->collectionUrl($uid), [

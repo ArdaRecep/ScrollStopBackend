@@ -3,7 +3,8 @@
 return [
     'dispatch_mode' => env('VIDEO_JOB_DISPATCH_MODE', 'process'),
     'post_rate_limit_per_minute' => (int) env('VIDEO_POST_RATE_LIMIT_PER_MINUTE', 5),
-    'remotion_timeout_seconds' => (int) env('VIDEO_REMOTION_TIMEOUT_SECONDS', 900),
+    'remotion_timeout_seconds' => (int) env('VIDEO_REMOTION_TIMEOUT_SECONDS', 1800),
+    'remotion_delay_render_timeout_ms' => (int) env('VIDEO_REMOTION_DELAY_RENDER_TIMEOUT_MS', 1800000),
     'remotion_crf' => (int) env('VIDEO_REMOTION_CRF', 24),
     'remotion_x264_preset' => env('VIDEO_REMOTION_X264_PRESET', 'superfast'),
     'remotion_concurrency' => (int) env('VIDEO_REMOTION_CONCURRENCY', 0),
@@ -17,6 +18,7 @@ return [
     'default_fps' => (int) env('VIDEO_DEFAULT_FPS', 22),
     'min_scenes' => (int) env('VIDEO_MIN_SCENES', 3),
     'max_scenes' => (int) env('VIDEO_MAX_SCENES', 4),
+    'ffprobe_timeout_seconds' => (int) env('VIDEO_FFPROBE_TIMEOUT_SECONDS', 300),
     'static_image_path' => env('VIDEO_STATIC_IMAGE_PATH', ''),
     'static_audio_path' => env('VIDEO_STATIC_AUDIO_PATH', ''),
 ];

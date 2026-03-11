@@ -40,6 +40,8 @@ return [
         'model' => env('OPENAI_MODEL', 'gpt-4.1-mini'),
         'tts_model' => env('OPENAI_TTS_MODEL', 'tts-1-hd'),
         'tts_speed' => (float) env('OPENAI_TTS_SPEED', 0.95),
+        'request_timeout_seconds' => (int) env('OPENAI_REQUEST_TIMEOUT_SECONDS', 900),
+        'tts_timeout_seconds' => (int) env('OPENAI_TTS_TIMEOUT_SECONDS', 900),
     ],
 
     'flux' => [
@@ -51,10 +53,15 @@ return [
         'prompt_upsampling' => env('FLUXAI_PROMPT_UPSAMPLING', false),
         'output_format' => env('FLUXAI_OUTPUT_FORMAT', 'jpeg'),
         'safety_tolerance' => env('FLUXAI_SAFETY_TOLERANCE', 2),
-        'timeout_seconds' => env('FLUXAI_TIMEOUT_SECONDS', 90),
-        'job_timeout_seconds' => env('FLUXAI_JOB_TIMEOUT_SECONDS', 600),
-        'poll_attempts' => env('FLUXAI_POLL_ATTEMPTS', 40),
-        'poll_delay_ms' => env('FLUXAI_POLL_DELAY_MS', 1000),
+        'timeout_seconds' => (int) env('FLUXAI_TIMEOUT_SECONDS', 600),
+        'poll_request_timeout_seconds' => (int) env('FLUXAI_POLL_REQUEST_TIMEOUT_SECONDS', 180),
+        'job_timeout_seconds' => (int) env('FLUXAI_JOB_TIMEOUT_SECONDS', 1800),
+        'poll_attempts' => (int) env('FLUXAI_POLL_ATTEMPTS', 1800),
+        'poll_delay_ms' => (int) env('FLUXAI_POLL_DELAY_MS', 1000),
+    ],
+
+    'firebase' => [
+        'firestore_timeout_seconds' => (int) env('FIRESTORE_TIMEOUT_SECONDS', 120),
     ],
 
 ];

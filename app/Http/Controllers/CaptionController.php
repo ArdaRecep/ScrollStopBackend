@@ -82,7 +82,9 @@ class CaptionController extends Controller
 
         $userPrompt = implode("\n", $userPromptLines);
 
-        $resp = Http::timeout(20)->withHeaders([
+        $timeoutSeconds = max(30, (int) config('openrouter.request_timeout_seconds', 120));
+
+        $resp = Http::timeout($timeoutSeconds)->withHeaders([
           'Authorization' => "Bearer {$apiKey}",
           'HTTP-Referer' => env('APP_URL'),
           'X-Title' => 'ScrollStop Caption Generator',

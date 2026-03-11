@@ -339,8 +339,14 @@ class VideoAdPipelineService
             'default=noprint_wrappers=1:nokey=1',
             $audioPath,
         ]);
-        $process->setTimeout(12);
-        $process->run();
+        $ffprobeTimeout = max(120, (int) config('video.ffprobe_timeout_seconds', 300));
+        $process->setTimeout($ffprobeTimeout);
+
+        try {
+            $process->run();
+        } catch (\Throwable $e) {
+            return null;
+        }
 
         if (!$process->isSuccessful()) {
             return null;

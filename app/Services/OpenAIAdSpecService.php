@@ -102,7 +102,9 @@ class OpenAIAdSpecService
             ],
         ];
 
-        $response = Http::timeout(45)
+        $requestTimeout = max(300, (int) config('services.openai.request_timeout_seconds', 900));
+
+        $response = Http::timeout($requestTimeout)
             ->withToken($apiKey)
             ->acceptJson()
             ->post('https://api.openai.com/v1/chat/completions', [

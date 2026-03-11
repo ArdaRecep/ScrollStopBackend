@@ -38,7 +38,9 @@ class OpenAIVoiceoverService
             throw new RuntimeException('Unable to create temporary audio directory');
         }
 
-        $response = Http::timeout(60)
+        $timeoutSeconds = max(300, (int) config('services.openai.tts_timeout_seconds', 900));
+
+        $response = Http::timeout($timeoutSeconds)
             ->withToken($apiKey)
             ->post('https://api.openai.com/v1/audio/speech', [
                 'model' => $model,

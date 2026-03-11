@@ -121,7 +121,9 @@ class FirestoreService
 
     private function request()
     {
-        return Http::timeout(25)
+        $timeoutSeconds = max(30, (int) config('services.firebase.firestore_timeout_seconds', 120));
+
+        return Http::timeout($timeoutSeconds)
             ->withToken($this->accessToken())
             ->acceptJson();
     }

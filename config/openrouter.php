@@ -2,4 +2,5 @@
 return [
     'api' => env('OPENROUTER_API_KEY'),
     'model' => env('OPENROUTER_MODEL', 'openai/gpt-4o-mini'),
+    'request_timeout_seconds' => (int) env('OPENROUTER_REQUEST_TIMEOUT_SECONDS', 120),
 ];

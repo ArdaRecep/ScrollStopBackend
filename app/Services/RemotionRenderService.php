@@ -37,6 +37,7 @@ class RemotionRenderService
         $concurrency = (int) config('video.remotion_concurrency', 0);
         $scale = (float) config('video.remotion_scale', 1.0);
         $bundleCacheDir = trim((string) config('video.remotion_bundle_cache_dir', '/tmp/scrollstop-remotion-bundles'));
+        $delayRenderTimeoutMs = max(1800000, (int) config('video.remotion_delay_render_timeout_ms', 1800000));
         $statsPath = rtrim($workDir, '/').'/remotion-stats.json';
 
         $command = [
@@ -48,6 +49,8 @@ class RemotionRenderService
             $outputPath,
             '--crf',
             (string) $crf,
+            '--delay-render-timeout-ms',
+            (string) $delayRenderTimeoutMs,
             '--stats-out',
             $statsPath,
         ];
@@ -74,7 +77,7 @@ class RemotionRenderService
 
         $process = new Process($command, base_path());
 
-        $timeoutSeconds = max(60, (int) config('video.remotion_timeout_seconds', 600));
+        $timeoutSeconds = max(1800, (int) config('video.remotion_timeout_seconds', 1800));
         $process->setTimeout($timeoutSeconds);
         $process->run();
 

@@ -94,7 +94,11 @@ class FluxImageService
         }
 
         $model = trim((string) config('services.flux.model', 'flux-kontext-pro'));
-        $timeout = max(15, (int) config('services.flux.timeout_seconds', 60));
+        $timeout = max(60, (int) config('services.flux.timeout_seconds', 600));
+        $pollRequestTimeout = max(
+            60,
+            (int) config('services.flux.poll_request_timeout_seconds', max(120, $timeout))
+        );
         $pollEndpoint = trim((string) config('services.flux.poll_endpoint', ''));
         if ($pollEndpoint === '') {
             $pollEndpoint = $this->deriveFluxApiAiPollEndpoint();
@@ -193,7 +197,7 @@ class FluxImageService
         }
 
         $delayMs = max(500, (int) config('services.flux.poll_delay_ms', 2000));
-        $jobTimeoutSeconds = max(60, (int) config('services.flux.job_timeout_seconds', 600));
+        $jobTimeoutSeconds = max(1800, (int) config('services.flux.job_timeout_seconds', 1800));
         $maxRounds = max(1, (int) ceil(($jobTimeoutSeconds * 1000) / $delayMs));
 
         for ($round = 0; $round < $maxRounds && $pending !== []; $round++) {
@@ -202,14 +206,15 @@ class FluxImageService
             $pollResponses = Http::pool(function (Pool $pool) use (
                 $snapshot,
                 $apiKey,
-                $pollEndpoint
+                $pollEndpoint,
+                $pollRequestTimeout
             ) {
                 $requests = [];
 
                 foreach ($snapshot as $key => $meta) {
                     $requests[$key] = $pool
                         ->as($key)
-                        ->timeout(20)
+                        ->timeout($pollRequestTimeout)
                         ->withHeaders([
                             'Authorization' => 'Bearer '.$apiKey,
                             'Accept' => 'application/json',
@@ -365,7 +370,7 @@ class FluxImageService
         }
 
         $model = trim((string) config('services.flux.model', 'flux-kontext-pro'));
-        $timeout = max(15, (int) config('services.flux.timeout_seconds', 60));
+        $timeout = max(60, (int) config('services.flux.timeout_seconds', 600));
         [$width, $height] = $this->resolveDimensions($aspectRatio);
         $isFluxApiAi = $this->isFluxApiAiEndpoint($endpoint);
 
@@ -471,9 +476,16 @@ class FluxImageService
             }
         }
 
-        $attempts = max(2, (int) config('services.flux.poll_attempts', 12));
+        $attempts = max(2, (int) config('services.flux.poll_attempts', 1800));
         $delayMs = max(500, (int) config('services.flux.poll_delay_ms', 2000));
-        $jobTimeoutSeconds = max(60, (int) config('services.flux.job_timeout_seconds', 600));
+        $jobTimeoutSeconds = max(1800, (int) config('services.flux.job_timeout_seconds', 1800));
+        $requestTimeout = max(
+            60,
+            (int) config(
+                'services.flux.poll_request_timeout_seconds',
+                config('services.flux.timeout_seconds', 600)
+            )
+        );
 
         if ($isFluxApiAi) {
             $minimumAttemptsForTimeout = (int) ceil(($jobTimeoutSeconds * 1000) / $delayMs);
@@ -490,7 +502,7 @@ class FluxImageService
                 : [];
 
             $response = $this->requestWithAuthFallback(
-                fn (array $headers): Response => Http::timeout(20)
+                fn (array $headers): Response => Http::timeout($requestTimeout)
                     ->withHeaders($headers)
                     ->get($pollEndpoint, $query),
                 $apiKey,
@@ -499,7 +511,7 @@ class FluxImageService
 
             if (!$isFluxApiAi && !$response->ok() && $jobId !== '') {
                 $response = $this->requestWithAuthFallback(
-                    fn (array $headers): Response => Http::timeout(20)
+                    fn (array $headers): Response => Http::timeout($requestTimeout)
                         ->withHeaders(array_merge($headers, [
                             'Content-Type' => 'application/json',
                         ]))

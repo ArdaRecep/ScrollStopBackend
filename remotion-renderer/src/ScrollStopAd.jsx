@@ -185,8 +185,8 @@ export const ScrollStopAd = ({scenes = [], voiceoverAudioSrc = null, tone = 'Bol
             padding: '28px 32px',
             background: theme.cardBackground,
             border: theme.cardBorder,
-            boxShadow: '0 24px 56px rgba(0,0,0,0.38)',
-            backdropFilter: 'blur(12px)',
+            boxShadow: '0 20px 44px rgba(0,0,0,0.34)',
+            outline: '1px solid rgba(255,255,255,0.06)',
           }}
         >
           <div

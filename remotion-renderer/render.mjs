@@ -38,6 +38,7 @@ const concurrencyArg = readArg('--concurrency');
 const scaleArg = readArg('--scale');
 const statsOutArg = readArg('--stats-out');
 const bundleCacheDirArg = readArg('--bundle-cache-dir');
+const delayRenderTimeoutMsArg = readArg('--delay-render-timeout-ms');
 
 if (!specPath || !outPath) {
   console.error('Usage: node render.mjs --spec /path/spec.json --out /path/output.mp4');
@@ -139,6 +140,12 @@ const renderScale =
     ? parsedScale
     : 1;
 
+const parsedDelayRenderTimeoutMs = Number(delayRenderTimeoutMsArg);
+const delayRenderTimeoutMs =
+  Number.isFinite(parsedDelayRenderTimeoutMs) && parsedDelayRenderTimeoutMs >= 30000
+    ? Math.floor(parsedDelayRenderTimeoutMs)
+    : 1800000;
+
 const rendererRoot = resolveRendererRoot();
 const entryPoint = path.resolve(rendererRoot, 'src/index.js');
 const srcDirectory = path.resolve(rendererRoot, 'src');
@@ -183,6 +190,7 @@ const composition = await selectComposition({
   serveUrl: bundled,
   id: 'ScrollStopAd',
   inputProps,
+  timeoutInMilliseconds: delayRenderTimeoutMs,
 });
 
 const renderStartedAt = Date.now();
@@ -198,6 +206,7 @@ await renderMedia({
   x264Preset: x264PresetArg || 'veryfast',
   concurrency: renderConcurrency ?? undefined,
   scale: renderScale,
+  timeoutInMilliseconds: delayRenderTimeoutMs,
 });
 
 const renderMs = Date.now() - renderStartedAt;
